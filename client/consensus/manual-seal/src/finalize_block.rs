@@ -47,7 +47,7 @@ pub fn finalize_block<B, H, CB>(params: FinalizeBlockParams<B, CB>)
 {
 	let FinalizeBlockParams {
 		hash,
-		sender,
+		mut sender,
 		justification,
 		back_end,
 		..
@@ -56,11 +56,11 @@ pub fn finalize_block<B, H, CB>(params: FinalizeBlockParams<B, CB>)
 	match back_end.finalize_block(BlockId::Hash(hash), justification) {
 		Err(e) => {
 			log::warn!("Failed to finalize block {:?}", e);
-			rpc::send_result(sender, Err(e.into()))
+			rpc::send_result(&mut sender, Err(e.into()))
 		}
 		Ok(()) => {
 			log::info!("Successfully finalized block: {}", hash);
-			rpc::send_result(sender, Ok(()))
+			rpc::send_result(&mut sender, Ok(()))
 		}
 	}
 }

@@ -6,35 +6,24 @@ description = "Manual sealing engine for Substrate"
 edition = "2018"
 
 [dependencies]
-codec = { package = "parity-scale-codec", version = "1.0.0", features = ["derive"] }
-num-bigint = "0.2.3"
-num-rational = "0.2.2"
-num-traits = "0.2.8"
-futures = "0.3.1"
-futures-timer = "0.4.0"
-parking_lot = "0.10"
-log = "0.4.8"
-rand = "0.7.2"
 derive_more = "0.99.2"
+futures = "0.3.1"
 hash-db = "0.15.2"
 jsonrpc-core = "14.0.5"
 jsonrpc-core-client = "14.0.5"
 jsonrpc-derive = "14.0.5"
+log = "0.4.8"
+parking_lot = "0.10"
+serde = { version = "1.0", features=["derive"] }
 
-sp-inherents = { path = "../../../primitives/inherents" }
 sc-client = { path = "../../../client" }
 sc-client-api = { path = "../../../client/api" }
-sp-api = { path = "../../../primitives/api" }
-sc-basic-authority = { path = "../../../client/basic-authorship" }
-sp-blockchain = { path = "../../../primitives/blockchain" }
-sp-block-builder = { path = "../../../primitives/block-builder" }
-sp-consensus = { package = "sp-consensus", path = "../../../primitives/consensus/common" }
-sp-runtime = {  path = "../../../primitives/runtime" }
-fork-tree = { path = "../../../utils/fork-tree" }
-sp-transaction-pool = { path = "../../../primitives/transaction-pool" }
 sc-transaction-pool = { path = "../../transaction-pool", features = ["test-helpers"] }
-serde = { version = "1.0", features=["derive"] }
-primitives = { package = "sp-core",  path = "../../../primitives/core" }
+sp-blockchain = { path = "../../../primitives/blockchain" }
+sp-consensus = { package = "sp-consensus", path = "../../../primitives/consensus/common" }
+sp-inherents = { path = "../../../primitives/inherents" }
+sp-runtime = {  path = "../../../primitives/runtime" }
+sp-transaction-pool = { path = "../../../primitives/transaction-pool" }
 
 [dev-dependencies]
 substrate-test-runtime-client = { path = "../../../test-utils/runtime/client" }

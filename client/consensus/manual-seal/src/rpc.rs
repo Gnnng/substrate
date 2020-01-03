@@ -135,7 +135,7 @@ impl<Hash: Send + 'static> ManualSealApi<Hash> for ManualSeal<Hash> {
 				// error from the authorship task
 				Ok(Err(e)) => {
 					Err(Error {
-						code: ErrorCode::ServerError(SERVER_SHUTTING_DOWN),
+						code: ErrorCode::ServerError(500),
 						message: format!("{}", e),
 						data: None,
 					})
@@ -169,7 +169,7 @@ impl<Hash: Send + 'static> ManualSealApi<Hash> for ManualSeal<Hash> {
 				// error from the authorship task
 				Ok(Err(e)) => {
 					Err(Error {
-						code: ErrorCode::ServerError(SERVER_SHUTTING_DOWN),
+						code: ErrorCode::ServerError(500),
 						message: format!("{}", e),
 						data: None
 					})
@@ -205,12 +205,12 @@ fn map_error(error: SendError) -> Error {
 /// report any errors or successes encountered by the authorship task back
 /// to the rpc
 pub fn send_result<T: std::fmt::Debug>(
-	sender: Sender<T>,
+	sender: &mut Sender<T>,
 	result: std::result::Result<T, crate::Error>
 ) {
-	sender.map(|sender| {
+	if let Some(sender) = sender.take() {
 		if let Err(err) = sender.send(result) {
 			log::warn!("Server is shutting down: {:?}", err)
 		}
-	});
+	}
 }

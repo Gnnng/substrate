@@ -59,7 +59,7 @@ pub struct SealBlockParams<'a, B: BlockT, C, CB, E, P: txpool::ChainApi> {
 	pub select_chain: &'a C,
 	/// block import object
 	pub block_import: &'a mut BoxBlockImport<B>,
-	/// inherent data provide
+	/// inherent data provider
 	pub inherent_data_provider: &'a InherentDataProviders,
 }
 
@@ -80,7 +80,7 @@ pub async fn seal_new_block<B, C, CB, E, P, H>(params: SealBlockParams<'_, B, C,
 		finalize,
 		pool,
 		parent_hash,
-		sender,
+		mut sender,
 		back_end,
 		select_chain,
 		block_import,
@@ -89,83 +89,77 @@ pub async fn seal_new_block<B, C, CB, E, P, H>(params: SealBlockParams<'_, B, C,
 		..
 	} = params;
 
-	if pool.status().ready == 0 && !create_empty {
-		return rpc::send_result(sender, Err(Error::EmptyTransactionPool));
-	}
-
-	// get the header to build this new block on.
-	// use the parent_hash supplied via `EngineCommand`
-	// or fetch the best_block.
-	let header = match parent_hash {
-		Some(hash) => {
-			back_end.blockchain().header(BlockId::Hash(hash))
-				.map_err(Error::from)
-				.and_then(|header| {
-					match header {
-						Some(header) => Ok(header),
-						None => Err(Error::BlockNotFound(format!("{}", hash)))
-					}
-				})
+	let future = async {
+		if pool.status().ready == 0 && !create_empty {
+			return Err(rpc::send_result(&mut sender, Err(Error::EmptyTransactionPool)));
 		}
-		None => select_chain.best_chain().map_err(Error::from)
+
+		// get the header to build this new block on.
+		// use the parent_hash supplied via `EngineCommand`
+		// or fetch the best_block.
+		let header = match parent_hash {
+			Some(hash) => {
+				back_end.blockchain().header(BlockId::Hash(hash))
+					.map_err(Error::from)
+					.and_then(|header| {
+						match header {
+							Some(header) => Ok(header),
+							None => Err(Error::BlockNotFound(format!("{}", hash)))
+						}
+					})
+			}
+			None => select_chain.best_chain().map_err(Error::from)
+		};
+
+		let header = header.map_err(|e| rpc::send_result(&mut sender, Err(e)))?;
+
+		let mut proposer = env.init(&header)
+			.map_err(|err| {
+				rpc::send_result(&mut sender, Err(Error::ProposerError(format!("{}", err))))
+			})?;
+
+		let id = inherent_data_provider.create_inherent_data()
+			.map_err(|err| {
+				rpc::send_result(&mut sender, Err(err.into()))
+			})?;
+
+		let block = proposer.propose(id, Default::default(), Duration::from_secs(5))
+			.await
+			.map_err(|err| {
+				rpc::send_result(&mut sender, Err(Error::ProposerError(format!("{}", err))))
+			})?;
+
+		if block.extrinsics().len() == 0 {
+			return Err(rpc::send_result(&mut sender, Err(Error::EmptyTransactionPool)))
+		}
+
+		let (header, body) = block.deconstruct();
+		let params = BlockImportParams {
+			origin: BlockOrigin::Own,
+			header: header.clone(),
+			justification: None,
+			post_digests: Vec::new(),
+			body: Some(body),
+			finalized: finalize,
+			auxiliary: Vec::new(),
+			fork_choice: ForkChoiceStrategy::LongestChain,
+			allow_missing_state: false,
+			import_existing: false,
+		};
+
+		match block_import.import_block(params, HashMap::new()) {
+			Ok(ImportResult::Imported(aux)) => {
+				rpc::send_result(&mut sender, Ok(CreatedBlock { hash: <B as BlockT>::Header::hash(&header), aux }))
+			}
+			Ok(other) => rpc::send_result(&mut sender, Err(other.into())),
+			Err(e) => {
+				log::warn!("Failed to import block: {:?}", e);
+				rpc::send_result(&mut sender, Err(e.into()))
+			}
+		};
+
+		Ok(())
 	};
 
-	let header = match header {
-		Err(e) => {
-			return rpc::send_result(sender, Err(e));
-		}
-		Ok(h) => h,
-	};
-
-	let mut proposer = match env.init(&header) {
-		Err(err) => {
-			return rpc::send_result(sender, Err(Error::ProposerError(format!("{}", err))));
-		}
-		Ok(p) => p,
-	};
-
-	let id = match inherent_data_provider.create_inherent_data() {
-		Err(err) => {
-			return rpc::send_result(sender, Err(err.into()));
-		}
-		Ok(id) => id,
-	};
-
-	let result = proposer.propose(
-		id,
-		Default::default(),
-		Duration::from_secs(5),
-	).await;
-
-	let (params, header) = match result {
-		Ok(block) => {
-			let (header, body) = block.deconstruct();
-			(BlockImportParams {
-				origin: BlockOrigin::Own,
-				header: header.clone(),
-				justification: None,
-				post_digests: Vec::new(),
-				body: Some(body),
-				finalized: finalize,
-				auxiliary: Vec::new(),
-				fork_choice: ForkChoiceStrategy::LongestChain,
-				allow_missing_state: false,
-				import_existing: false,
-			}, header)
-		}
-		Err(err) => {
-			return rpc::send_result(sender, Err(Error::ProposerError(format!("{}", err))));
-		}
-	};
-
-	match block_import.import_block(params, HashMap::new()) {
-		Ok(ImportResult::Imported(aux)) => {
-			rpc::send_result(sender, Ok(CreatedBlock { hash: <B as BlockT>::Header::hash(&header), aux }))
-		}
-		Ok(other) => rpc::send_result(sender, Err(other.into())),
-		Err(e) => {
-			log::warn!("Failed to import block: {:?}", e);
-			rpc::send_result(sender, Err(e.into()))
-		}
-	};
+	let _ = future.await;
 }
