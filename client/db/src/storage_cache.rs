@@ -28,6 +28,7 @@ use sp_state_machine::{backend::Backend as StateBackend, TrieBackend};
 use log::trace;
 use sc_client_api::backend::{StorageCollection, ChildStorageCollection};
 use std::hash::Hash as StdHash;
+use crate::stats::UsageStats;
 
 const STATE_CACHE_BLOCKS: usize = 12;
 
@@ -290,10 +291,12 @@ pub struct CacheChanges<H: Hasher, B: BlockT> {
 /// in `sync_cache` along with the change overlay.
 /// For non-canonical clones local cache and changes are dropped.
 pub struct CachingState<H: Hasher, S: StateBackend<H>, B: BlockT> {
+	/// Usage statistics
+	usage: UsageStats,
 	/// Backing state.
 	state: S,
 	/// Cache data.
-	pub cache: CacheChanges<H, B>
+	pub cache: CacheChanges<H, B>,
 }
 
 impl<H: Hasher, S: StateBackend<H>, B: BlockT> std::fmt::Debug for CachingState<H, S, B> {
@@ -409,6 +412,7 @@ impl<H: Hasher, S: StateBackend<H>, B: BlockT> CachingState<H, S, B> {
 	/// Create a new instance wrapping generic State and shared cache.
 	pub fn new(state: S, shared_cache: SharedCache<B, H>, parent_hash: Option<B::Hash>) -> CachingState<H, S, B> {
 		CachingState {
+			usage: UsageStats::new(),
 			state,
 			cache: CacheChanges {
 				shared_cache,
@@ -483,19 +487,25 @@ impl<H: Hasher, S: StateBackend<H>, B: BlockT> StateBackend<H> for CachingState<
 		// Note that local cache makes that lru is not refreshed
 		if let Some(entry) = local_cache.storage.get(key).cloned() {
 			trace!("Found in local cache: {:?}", HexDisplay::from(&key));
-			return Ok(entry)
+			return Ok(
+				self.usage.tally_key_read(key, entry, true)
+			)
 		}
 		let mut cache = self.cache.shared_cache.lock();
 		if Self::is_allowed(Some(key), None, &self.cache.parent_hash, &cache.modifications) {
 			if let Some(entry) = cache.lru_storage.get(key).map(|a| a.clone()) {
 				trace!("Found in shared cache: {:?}", HexDisplay::from(&key));
-				return Ok(entry)
+				return Ok(
+					self.usage.tally_key_read(key, entry, true)
+				)
 			}
 		}
 		trace!("Cache miss: {:?}", HexDisplay::from(&key));
 		let value = self.state.storage(key)?;
 		RwLockUpgradableReadGuard::upgrade(local_cache).storage.insert(key.to_vec(), value.clone());
-		Ok(value)
+		Ok(
+			self.usage.tally_key_read(key, value, false)
+		)
 	}
 
 	fn storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>, Self::Error> {
@@ -527,17 +537,25 @@ impl<H: Hasher, S: StateBackend<H>, B: BlockT> StateBackend<H> for CachingState<
 		let local_cache = self.cache.local_cache.upgradable_read();
 		if let Some(entry) = local_cache.child_storage.get(&key).cloned() {
 			trace!("Found in local cache: {:?}", key);
-			return Ok(entry)
+			return Ok(
+				self.usage.tally_child_key_read(&key, entry, true)
+			)
 		}
 		let mut cache = self.cache.shared_cache.lock();
 		if Self::is_allowed(None, Some(&key), &self.cache.parent_hash, &cache.modifications) {
 			if let Some(entry) = cache.lru_child_storage.get(&key).map(|a| a.clone()) {
 				trace!("Found in shared cache: {:?}", key);
-				return Ok(entry)
+				return Ok(
+					self.usage.tally_child_key_read(&key, entry, true)
+				)
 			}
 		}
 		trace!("Cache miss: {:?}", key);
 		let value = self.state.child_storage(storage_key, child_info, &key.1[..])?;
+
+		// just pass it through the usage counter
+		let value =	self.usage.tally_child_key_read(&key, value, false);
+
 		RwLockUpgradableReadGuard::upgrade(local_cache).child_storage.insert(key, value.clone());
 		Ok(value)
 	}
@@ -635,6 +653,10 @@ impl<H: Hasher, S: StateBackend<H>, B: BlockT> StateBackend<H> for CachingState<
 
 	fn as_trie_backend(&mut self) -> Option<&TrieBackend<Self::TrieBackendStorage, H>> {
 		self.state.as_trie_backend()
+	}
+
+	fn usage_info(&self) -> sp_state_machine::UsageInfo {
+		self.usage.take()
 	}
 }
 
