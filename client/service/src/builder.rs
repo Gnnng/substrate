@@ -888,11 +888,6 @@ ServiceBuilder<
 			let bandwidth_download = net_status.average_download_per_sec;
 			let bandwidth_upload = net_status.average_upload_per_sec;
 
-			let used_state_cache_size = match info.used_state_cache_size {
-				Some(size) => size,
-				None => 0,
-			};
-
 			// get cpu usage and memory usage of this process
 			let (cpu_usage, memory) = if let Some(self_pid) = self_pid {
 				if sys.refresh_process(self_pid) {
@@ -915,7 +910,10 @@ ServiceBuilder<
 				"finalized_hash" => ?info.chain.finalized_hash,
 				"bandwidth_download" => bandwidth_download,
 				"bandwidth_upload" => bandwidth_upload,
-				"used_state_cache_size" => used_state_cache_size,
+				"used_state_cache_size" => info.usage.memory.state_cache,
+				"used_db_cache_size" => info.usage.memory.database_cache,
+				"disk_read_per_sec" => info.usage.io.bytes_read,
+				"disk_write_per_sec" => info.usage.io.bytes_written,
 			);
 			let _ = record_metrics!(
 				"peers" => num_peers,
@@ -926,7 +924,10 @@ ServiceBuilder<
 				"finalized_height" => finalized_number,
 				"bandwidth_download" => bandwidth_download,
 				"bandwidth_upload" => bandwidth_upload,
-				"used_state_cache_size" => used_state_cache_size,
+				"used_state_cache_size" => info.usage.memory.state_cache,
+				"used_db_cache_size" => info.usage.memory.database_cache,
+				"disk_read_per_sec" => info.usage.io.bytes_read,
+				"disk_write_per_sec" => info.usage.io.bytes_written,
 			);
 
 			Ok(())
