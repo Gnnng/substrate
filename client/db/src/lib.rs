@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use std::io;
 use std::collections::{HashMap, HashSet};
 
-use sc_client_api::{execution_extensions::ExecutionExtensions, ForkBlocks};
+use sc_client_api::{execution_extensions::ExecutionExtensions, ForkBlocks, UsageInfo, MemoryInfo, IoInfo};
 use sc_client_api::backend::NewBlockState;
 use sc_client_api::backend::{StorageCollection, ChildStorageCollection};
 use sp_blockchain::{
@@ -823,7 +823,40 @@ where
 	}
 }
 
-/// Disk backend. Keeps data in a key-value store. In archive mode, trie nodes are kept from all blocks.
+struct Frozen<T: Clone> {
+	at: std::time::Instant,
+	value: T,
+}
+
+pub(crate) struct FrozenForDuration<T: Clone> {
+	duration: std::time::Duration,
+	value: RwLock<Frozen<T>>,
+}
+
+impl<T: Clone> FrozenForDuration<T> {
+	fn new(duration: std::time::Duration, initial: T) -> Self {
+		Self {
+			duration,
+			value: Frozen { at: std::time::Instant::now(), value: initial }.into(),
+		}
+	}
+
+	fn take_or_else<F>(&self, f: F) -> T where F: FnOnce() -> T {
+		if self.value.read().at.elapsed() > self.duration {
+			let mut write_lock = self.value.write();
+			let new_value = f();
+			write_lock.at = std::time::Instant::now();
+			write_lock.value = new_value.clone();
+			new_value
+		} else {
+			self.value.read().value.clone()
+		}
+	}
+}
+
+/// Disk backend.
+///
+/// Disk backend keps data in a key-value store. In archive mode, trie nodes are kept from all blocks.
 /// Otherwise, trie nodes are kept only from some recent blocks.
 pub struct Backend<Block: BlockT> {
 	storage: Arc<StorageDb<Block>>,
@@ -837,6 +870,7 @@ pub struct Backend<Block: BlockT> {
 	shared_cache: SharedCache<Block, Blake2Hasher>,
 	import_lock: RwLock<()>,
 	is_archive: bool,
+	io_stats: FrozenForDuration<kvdb::IoStats>,
 }
 
 impl<Block: BlockT<Hash=H256>> Backend<Block> {
@@ -898,6 +932,7 @@ impl<Block: BlockT<Hash=H256>> Backend<Block> {
 			),
 			import_lock: Default::default(),
 			is_archive: is_archive_pruning,
+			io_stats: FrozenForDuration::new(std::time::Duration::from_secs(1), kvdb::IoStats::empty()),
 		})
 	}
 
@@ -1484,6 +1519,27 @@ impl<Block> sc_client_api::backend::Backend<Block, Blake2Hasher> for Backend<Blo
 		Some(self.offchain_storage.clone())
 	}
 
+	fn usage_info(&self) -> UsageInfo {
+		let io_stats = self.io_stats.take_or_else(|| self.storage.db.io_stats(kvdb::IoStatsKind::SincePrevious));
+		let database_cache = parity_util_mem::malloc_size(&*self.storage.db);
+		let state_cache = (*&self.shared_cache).lock().used_storage_cache_size();
+
+		UsageInfo {
+			memory: MemoryInfo {
+				state_cache,
+				database_cache,
+			},
+			io: IoInfo {
+				transactions: io_stats.transactions,
+				bytes_read: io_stats.bytes_read,
+				bytes_written: io_stats.bytes_written,
+				writes: io_stats.writes,
+				reads: io_stats.reads,
+				average_transaction_size: io_stats.avg_transaction_size() as u64,
+			},
+		}
+	}
+
 	fn revert(&self, n: NumberFor<Block>) -> ClientResult<NumberFor<Block>> {
 		let mut best = self.blockchain.info().best_number;
 		let finalized = self.blockchain.info().finalized_number;
@@ -1522,11 +1578,6 @@ impl<Block> sc_client_api::backend::Backend<Block, Blake2Hasher> for Backend<Blo
 
 	fn blockchain(&self) -> &BlockchainDb<Block> {
 		&self.blockchain
-	}
-
-	fn used_state_cache_size(&self) -> Option<usize> {
-		let used = (*&self.shared_cache).lock().used_storage_cache_size();
-		Some(used)
 	}
 
 	fn state_at(&self, block: BlockId<Block>) -> ClientResult<Self::State> {

@@ -314,5 +314,9 @@ pub mod tests {
 		fn cache(&self) -> Option<Arc<dyn BlockchainCache<Block>>> {
 			None
 		}
+
+		fn usage_info(&self) -> sc_client_api::UsageInfo {
+			sc_client_api::UsageInfo::default()
+		}
 	}
 }
